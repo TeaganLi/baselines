@@ -1,4 +1,4 @@
-import sys
+import sys, os
 import re
 import multiprocessing
 import os.path as osp
@@ -6,12 +6,15 @@ import gym
 from collections import defaultdict
 import tensorflow as tf
 import numpy as np
+from datetime import datetime
+import json, envs
 
 from baselines.common.vec_env import VecFrameStack, VecNormalize, VecEnv
 from baselines.common.vec_env.vec_video_recorder import VecVideoRecorder
-from baselines.common.cmd_util import common_arg_parser, parse_unknown_args, make_vec_env, make_env
+from baselines.common.cmd_util import arg_parser, parse_unknown_args, make_vec_env, make_env
 from baselines.common.tf_util import get_session
 from baselines import logger
+from baselines.ppo2 import ppo2
 from importlib import import_module
 
 try:
@@ -50,34 +53,43 @@ _game_envs['retro'] = {
 }
 
 
-def train(args, extra_args):
+def train(args, ppo_args, network_args, extra_args):
     env_type, env_id = get_env_type(args)
     print('env_type: {}'.format(env_type))
 
     total_timesteps = int(args.num_timesteps)
     seed = args.seed
 
-    learn = get_learn_function(args.alg)
-    alg_kwargs = get_learn_function_defaults(args.alg, env_type)
-    alg_kwargs.update(extra_args)
+    ppo_kwargs = get_learn_function_defaults('ppo', env_type)
+    ppo_kwargs.update(vars(ppo_args))
+
+    network_kwargs = vars(network_args)
+    if extra_args:
+        network_kwargs.update(vars(extra_args))
+
+    lr = ppo_kwargs['lr']
+    ppo_kwargs['lr'] = lambda f:f*lr
+    cliprange = ppo_kwargs['cliprange']
+    ppo_kwargs['cliprange'] = lambda f:f*cliprange
 
     env = build_env(args)
     if args.save_video_interval != 0:
         env = VecVideoRecorder(env, osp.join(logger.get_dir(), "videos"), record_video_trigger=lambda x: x % args.save_video_interval == 0, video_length=args.save_video_length)
 
     if args.network:
-        alg_kwargs['network'] = args.network
+        ppo_kwargs['network'] = args.network
     else:
-        if alg_kwargs.get('network') is None:
-            alg_kwargs['network'] = get_default_network(env_type)
+        if ppo_kwargs.get('network') is None:
+            ppo_kwargs['network'] = get_default_network(env_type)
 
-    print('Training {} on {}:{} with arguments \n{}'.format(args.alg, env_type, env_id, alg_kwargs))
+    print('Training {} on {}:{} with arguments \n{}'.format(args.alg, env_type, env_id, ppo_kwargs))
 
-    model = learn(
+    model = ppo2.learn(
         env=env,
         seed=seed,
         total_timesteps=total_timesteps,
-        **alg_kwargs
+        **ppo_kwargs,
+        **network_kwargs
     )
 
     return model, env
@@ -213,6 +225,21 @@ def ppo_arg_parser():
     parser.add_argument('--load-path', '--load_path', type=str, default=None, help='path to load model from')
     return parser
 
+def network_arg_parser():
+    parser = arg_parser()
+    parser.add_argument('--value_network', '--value-network', type=str, default=None,
+                        choices=[None, 'copy', 'shared'],
+                        help='bool to decide if value network is to be used')
+    parser.add_argument('--normalize_observations', '--normalize-observations', type=bool, default=False,
+                        help='decide whether to normalize observations')
+    parser.add_argument('--estimate_q', '--estimate-q', type=bool, default=False,
+                        help='whether policy should estimate q or v')
+    parser.add_argument('--num_layers', '--num-layers', type=int, default=2)
+    parser.add_argument('--num_hidden', '--num-hidden', type=int, default=64)
+    parser.add_argument('--layer_norm', '--layer-norm', type=bool, default=False)
+    return parser
+
+
 def common_arg_parser():
     """
     Create an argparse.ArgumentParser for run_mujoco.py.
@@ -239,20 +266,34 @@ def main(args):
     # configure logger, disable logging in child MPI processes (with rank > 0)
 
     arg_parser = common_arg_parser()
-    args, unknown_args = arg_parser.parse_known_args(args)
-    extra_args = parse_cmdline_kwargs(unknown_args)
+    ppo_parser = ppo_arg_parser()
+    network_parser = network_arg_parser()
+    args, ppo_args = arg_parser.parse_known_args(args)
+    ppo_args, network_args =ppo_parser.parse_known_args(ppo_args)
+    network_args, extra_args = network_parser.parse_known_args(network_args)
+    extra_args = parse_cmdline_kwargs(extra_args)
+
+    dt = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    save_dir = osp.join(os.getenv('OPENAI_LOGDIR'), args.env, dt)
 
     if MPI is None or MPI.COMM_WORLD.Get_rank() == 0:
         rank = 0
-        logger.configure()
+        logger.configure(dir=save_dir)
+        with open(osp.join(logger.get_dir(), 'run.conf'), 'wt') as fh:
+            print(datetime.now().isoformat(), file=fh)
+            print(json.dumps(vars(args), indent=2), file=fh)
+            print(json.dumps(vars(ppo_args), indent=2), file=fh)
+            print(json.dumps(vars(network_args), indent=2), file=fh)
+            if extra_args:
+                print(json.dumps(vars(extra_args), indent=2), file=fh)
     else:
-        logger.configure(format_strs=[])
+        logger.configure(format_strs=[])    # disable logging
         rank = MPI.COMM_WORLD.Get_rank()
 
-    model, env = train(args, extra_args)
+    model, env = train(args, ppo_args, network_args, extra_args)
 
     if args.save_path is not None and rank == 0:
-        save_path = osp.expanduser(args.save_path)
+        save_path = osp.join(save_dir, '{}_{}'.format(args.env, args.num_timesteps))
         model.save(save_path)
 
     if args.play:
