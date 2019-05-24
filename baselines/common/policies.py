@@ -63,6 +63,10 @@ class PolicyWithValue(object):
             self.vf = fc(vf_latent, 'vf', 1)
             self.vf = self.vf[:,0]
 
+        # ---- tgli modified action -------
+        self.action_modified = tf.placeholder(dtype=tf.uint8, shape=[None])
+        self.neglogp_modified = self.pd.neglogp(self.action_modified)
+
     def _evaluate(self, variables, observation, **extra_feed):
         sess = self.sess
         feed_dict = {self.X: adjust_shape(self.X, observation)}
@@ -73,6 +77,15 @@ class PolicyWithValue(object):
                     feed_dict[inpt] = adjust_shape(inpt, data)
 
         return sess.run(variables, feed_dict)
+
+    def cal_neglogp(self, observation, a):
+        """
+        Tgli defined, given a, calculate its negative log prob
+        """
+        sess = self.sess
+        feed_dict = {self.X: adjust_shape(self.X, observation),
+                     self.action_modified: a}
+        return sess.run(self.neglogp_modified, feed_dict)
 
     def step(self, observation, **extra_feed):
         """

@@ -29,8 +29,8 @@ class Runner(AbstractEnvRunner):
             actions, values, self.states, neglogpacs = self.model.step(self.obs, S=self.states, M=self.dones)
             mb_obs.append(self.obs.copy())
             # mb_actions.append(actions)
+            # mb_neglogpacs.append(neglogpacs)
             mb_values.append(values)
-            mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)
 
             # Take actions in env and look the results
@@ -38,7 +38,10 @@ class Runner(AbstractEnvRunner):
             self.obs[:], rewards, self.dones, infos = self.env.step(actions)
             #---------------- conditional action -------------------
             actions = [info['custom']['action'] for info in infos]
+            neglogpacs = self.model.cal_neglogp(self.obs, actions)
             mb_actions.append(actions)
+            mb_neglogpacs.append(neglogpacs)
+
             #-------------------------------------------------------
             for info in infos:
                 maybeepinfo = info.get('episode')
