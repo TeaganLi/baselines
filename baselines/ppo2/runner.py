@@ -24,24 +24,30 @@ class Runner(AbstractEnvRunner):
         epinfos = []
         # For n in range number of steps
         for _ in range(self.nsteps):
-            # Given observations, get action value and neglopacs
-            # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, S=self.states, M=self.dones)
-            mb_obs.append(self.obs.copy())
+            # # Given observations, get action value and neglopacs
+            # # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
+            # actions, values, self.states, neglogpacs = self.model.step(self.obs, S=self.states, M=self.dones)
+            # mb_obs.append(self.obs.copy())
             # mb_actions.append(actions)
             # mb_neglogpacs.append(neglogpacs)
-            mb_values.append(values)
-            mb_dones.append(self.dones)
-
-            # Take actions in env and look the results
-            # Infos contains a ton of useful informations
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            # mb_values.append(values)
+            # mb_dones.append(self.dones)
+            #
+            # # Take actions in env and look the results
+            # # Infos contains a ton of useful informations
+            # self.obs[:], rewards, self.dones, infos = self.env.step(actions)
             #---------------- conditional action -------------------
+            logits, values, self.states, neglogpacs = self.model.step(self.obs, S=self.states, M=self.dones)
+            new_obs, rewards, self.dones, infos = self.env.step(logits)    # actions is logits
             actions = [info['custom']['action'] for info in infos]
             neglogpacs = self.model.cal_neglogp(self.obs, actions)
+            self.obs[:] = new_obs
+
+            mb_obs.append(self.obs.copy())
+            mb_values.append(values)
+            mb_dones.append(self.dones)
             mb_actions.append(actions)
             mb_neglogpacs.append(neglogpacs)
-
             #-------------------------------------------------------
             for info in infos:
                 maybeepinfo = info.get('episode')
